@@ -29,7 +29,7 @@ while 1
         stopTurtleBot(velocity_pub);
         orientCameraTowardsPoint(lineMidpoint, velocity_pub);
         cameraImage = getCameraImage(image_sub);
-        figure(6); imshow(cameraImage); title('original image after rotation');
+        figure(6); imshow(cameraImage); title('image after rotation');
         
         moveTurtleBotToPoint(lineMidpoint, velocity_pub)
         break;
@@ -53,7 +53,7 @@ while 1
         stopTurtleBot(velocity_pub);
         orientCameraTowardsPoint(furthestPointOnLine, velocity_pub);
         cameraImage = getCameraImage(image_sub);
-        figure(12); imshow(cameraImage); title('original image after rotation');
+        figure(12); imshow(cameraImage); title('image after rotation');
         moveTurtleBotToPoint(furthestPointOnLine, velocity_pub)
         break;
     end
@@ -112,13 +112,17 @@ end
 function moveTurtleBotToPoint(point, velocity_pub)
     velocity_msg = rosmessage(velocity_pub);
     % Move the robot to the line
-    focal_length = 3.04e-3; %mm to m
-    heightFromBottomOfCameraToGround = 0.1158; % in meters % xxx inches to bottom of camera from ground
-    pix = 1.12e-6; %pixel size is 1.12um x 1.12um according to spec
-    rpiMaxImageHeight = 480;
-    distanceFromPointOnLineToBottomOfImage = rpiMaxImageHeight - (point(2));
-    % forumala is z = y*focal_length/y'
-    distanceToLine = (heightFromBottomOfCameraToGround*focal_length)/(distanceFromPointOnLineToBottomOfImage*pix); 
+    % forumala for distance is is z = y*focal_length/y'
+    % y = distance from middle of camera lens to ground in meters
+    % y' = |object row in image - center row of image| * rowsize
+    % rowsize = height of image sensor/ number of rows in image (rpiMaxImageHeight)
+    focal_length = 3.04e-3; % From specification
+    y = 0.1158; % distance from middle of camera from ground TODO: Find correct value for this
+    heightOfImageSensor = 2.76e-3; % From specification
+    numberOfRowsInImage = 480;
+    rowsize = heightOfImageSensor/numberOfRowsInImage;
+    y_prime = abs(point(2) - numberOfRowsInImage/2) * rowsize;
+    distanceToLine = (y*focal_length)/y_prime; 
 
     velocity_msg.Linear.X = .1; % move robot .1 meters/second% speed = distance/time, time = distance/speed
     timeInSecondsToMoveForward = distanceToLine/velocity_msg.Linear.X;

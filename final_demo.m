@@ -1,16 +1,17 @@
 close all;
 
-[image_sub, velocity_pub] = initTurtleBot();
+[image_sub, velocity_pub, laser_sub] = initTurtleBot();
 
-velocity_msg = rosmessage(velocity_pub);
-
-% Set some parameters that will be used in the processing loop.
-% You can modify these values for different behavior.
 spinVelocity = 0.5;       % Angular velocity (rad/s)
 forwardVelocity = 0.0;    % Linear velocity (m/s)
 
+% TODO: check the resolution setting of the rpi camera
+totalNumberOfImageRows = 480;
+totalNumberOfIImageColumns = 640;
 
-% Find and white line and move to it
+rowNumberForBeginningOfGroundPlaneInImage = 220;
+
+% Find the white line and move to it so the robot is over top of it
 velocityMessageSent = false;
 while 1
     
@@ -27,6 +28,7 @@ while 1
     
     if horizontalLineFound
         stopTurtleBot(velocity_pub);
+        
         orientCameraTowardsPoint(lineMidpoint, velocity_pub);
         cameraImage = getCameraImage(image_sub);
         figure(6); imshow(cameraImage); title('image after rotation');
@@ -36,7 +38,8 @@ while 1
     end
 end
 
-% Follow white line
+% Follow the white line, while avoiding obstacles, and looking for the
+% yellow poles
 velocityMessageSent = false;
 while 1
     % Rotate robot
@@ -51,9 +54,11 @@ while 1
     
     if verticalLineFound
         stopTurtleBot(velocity_pub);
+        
         orientCameraTowardsPoint(furthestPointOnLine, velocity_pub);
         cameraImage = getCameraImage(image_sub);
         figure(12); imshow(cameraImage); title('image after rotation');
+        
         moveTurtleBotToPoint(furthestPointOnLine, velocity_pub)
         break;
     end
@@ -72,7 +77,7 @@ function stopTurtleBot(velocity_pub)
     send(velocity_pub,velocity_msg);
 end
 
-function [image_sub, velocity_pub] = initTurtleBot()
+function [image_sub, velocity_pub, laser_sub] = initTurtleBot()
     % Connect to Turtlebot
     % Connect to an External ROS Master
     % ip address of TurtleBot and Matlab, replace these values accordingly
@@ -100,6 +105,11 @@ function [image_sub, velocity_pub] = initTurtleBot()
     if ismember(TurtleBot_Topic.vel, rostopic('list'))
         velocity_pub = rospublisher(TurtleBot_Topic.vel, 'geometry_msgs/Twist');
     end
+    
+    %%% Subscribe to the robot lidar data
+    if ismember(TurtleBot_Topic.laser, rostopic('list'))
+        laser_sub = rossubscriber(TurtleBot_Topic.laser);
+    end
 end
 
 function moveTurtleBot(velocity_pub, spinVelocity, forwardVelocity)
@@ -110,7 +120,7 @@ function moveTurtleBot(velocity_pub, spinVelocity, forwardVelocity)
 end
 
 function moveTurtleBotToPoint(point, velocity_pub)
-    velocity_msg = rosmessage(velocity_pub);
+    x_velocity = .1; % .1 meters/second
     % Move the robot to the line
     % forumala for distance is is z = y*focal_length/y'
     % y = distance from middle of camera lens to ground in meters
@@ -119,13 +129,11 @@ function moveTurtleBotToPoint(point, velocity_pub)
     focal_length = 3.04e-3; % From specification
     y = 0.1158; % distance from middle of camera from ground TODO: Find correct value for this
     heightOfImageSensor = 2.76e-3; % From specification
-    numberOfRowsInImage = 480;
-    rowsize = heightOfImageSensor/numberOfRowsInImage;
-    y_prime = abs(point(2) - numberOfRowsInImage/2) * rowsize;
+    rowsize = heightOfImageSensor/totalNumberOfImageRows;
+    y_prime = abs(point(2) - totalNumberOfImageRows/2) * rowsize;
     distanceToLine = (y*focal_length)/y_prime; 
 
-    velocity_msg.Linear.X = .1; % move robot .1 meters/second% speed = distance/time, time = distance/speed
-    timeInSecondsToMoveForward = distanceToLine/velocity_msg.Linear.X;
+    timeInSecondsToMoveForward = distanceToLine/x_velocity;
     disp('distance to line'); disp(distanceToLine);
     disp('timeInSecondsToMoveForward'); disp(timeInSecondsToMoveForward);
 
@@ -135,14 +143,12 @@ function moveTurtleBotToPoint(point, velocity_pub)
     tic;
     while toc < timeInSecondsToMoveForward
         if messageSent == false
-            send(velocity_pub, velocity_msg);
+            moveTurtleBot(velocity_pub, 0, x_velocity)
             messageSent = true;
         end
     end
     
-    % stop robot
-    velocity_msg.Linear.X = 0;
-    send(velocity_pub,velocity_msg);
+    stopTurtleBot(velocity_pub);
 end
 
 function [cameraImage] = getCameraImage(image_sub)
@@ -155,21 +161,21 @@ end
 function [horizontalLineFound, lineMidpoint] = findHorizontalLine(cameraImage)
 
     bw = rgb2gray(cameraImage); % Convert color to gray scale image
-    bw_ground = bw(220:end,:); % Only keep the image of the ground by using row operations on the array
+    bw_ground = bw(rowNumberForBeginningOfGroundPlaneInImage:end,:); % Only keep the image of the ground by using row operations on the array
     bwth = imbinarize(bw_ground, 0.6); % Binary image obtained by thresholding RGB
+    % TODO: Determine if we should use sobel with horizontal orientation of
+    % the edges to detect
     bwth_Canny = edge(bwth,'Canny'); % Detect edges using Canny
     [H,T,R] = hough(bwth_Canny,'RhoResolution',0.5,'ThetaResolution',0.5);
     numpeaks = 1; %Specify the number of peaks
     P  = houghpeaks(H,numpeaks);
     
     % Find the lines in the image
+    % TODO: Determine if minlength should be longer for a horizontal line
     lines = houghlines(bwth_Canny,T,R,P,'FillGap',50,'MinLength',9); 
     
     % If we find a white line in the image
     if ~isempty(lines)
-        velocity_msg.Angular.Z = 0; % Stop rotation
-        send(velocity_pub, velocity_msg);
-        
         figure(1); imshow(bwth_Canny); title('bw threshold canny'); hold on;
         max_len = 0;
         for k = 1:length(lines)
@@ -195,20 +201,18 @@ function [horizontalLineFound, lineMidpoint] = findHorizontalLine(cameraImage)
         figure(3); imshow(bw); title('black and white');
         figure(4); imshow(bw_ground); title('bw ground plane');
         figure(5); imshow(bwth); title('bw threshold');
-    end
-    
-    if ~isempty(lines)
+        
         horizontalLineFound = true;
-        lineMidpoint = [xy(1,1),xy(1,2)+220];
+        lineMidpoint = [midpoint(1), midpoint(2) + rowNumberForBeginningOfGroundPlaneInImage];
     else
         horizontalLineFound = false;
         lineMidpoint = [0,0];
-    end
+    end   
 end
 
-function [verticalLineFound, furthestPointOnLine] = findVerticalLine(cameraImage)
+function [verticalLineFound, lineMidpoint] = findVerticalLine(cameraImage)
     bw = rgb2gray(cameraImage); % Convert color to gray scale image
-    bw_ground = bw(215:end,40:600); % Only keep the image of the ground by using row operations on the array
+    bw_ground = bw(rowNumberForBeginningOfGroundPlaneInImage:end,40:600); % Only keep the image of the ground and an narrow horizontal field of view
     bwth = imbinarize(bw_ground, 0.6); % Binary image obtained by thresholding RGB
     bwth_Sobel = edge(bwth,'Sobel', 'vertical'); % Detect edges using Canny
     [H,T,R] = hough(bwth_Sobel,'RhoResolution',0.5,'ThetaResolution',0.5);
@@ -218,7 +222,7 @@ function [verticalLineFound, furthestPointOnLine] = findVerticalLine(cameraImage
     % Find the lines in the image
     lines = houghlines(bwth_Sobel,T,R,P,'FillGap',50, 'MinLength', 50); 
     
-        
+     if ~isempty(lines)
         figure(7); imshow(bwth_Sobel); title('bw threshold canny'); hold on;
         max_len = 0;
         for k = 1:length(lines)
@@ -233,10 +237,9 @@ function [verticalLineFound, furthestPointOnLine] = findVerticalLine(cameraImage
             if ( len > max_len)
                max_len = len;
                xy_long = xy;
-               % Find the midpoint of the line which is the middle of the
-               % line in camera
+               % Find the midpoint of the line
                midpoint = [((xy_long(1,1) + xy_long(2,1))/2), ((xy_long(1,2) + xy_long(2,2))/2)];
-               plot(midpoint(1),midpoint(2),'x','LineWidth',2,'Color','blue');
+               plot(midpoint(1), midpoint(2), 'x', 'LineWidth', 2, 'Color', 'blue');
             end
         end
         
@@ -244,23 +247,19 @@ function [verticalLineFound, furthestPointOnLine] = findVerticalLine(cameraImage
         figure(9); imshow(bw); title('black and white');
         figure(10); imshow(bw_ground); title('bw ground plane');
         figure(11); imshow(bwth); title('bw threshold');
-        
-        if ~isempty(lines)
-            verticalLineFound = true;
-            furthestPointOnLine = [xy(1,1)+40,xy(1,2)+215];
-        else
-            verticalLineFound = false;
-            furthestPointOnLine = [0,0];
-        end
+     
+        verticalLineFound = true;
+        lineMidpoint = [midpoint(1) + 40, midpoint(2) + rowNumberForBeginningOfGroundPlaneInImage];
+     else
+        verticalLineFound = false;
+        lineMidpoint = [0,0];
+     end
  end
     
  function orientCameraTowardsPoint(point, velocity_pub)
-    velocity_msg = rosmessage(velocity_pub);
-    FoV = 62.2; %degrees
-    horizontalResolution = 640; % pixels
-    centerHorizontalPixel = horizontalResolution/2;
-    degreesPerPixel = FoV/horizontalResolution; % degrees/pixel
-    angleToRotateToCenterMidpointInCameraImage = (point(1) - centerHorizontalPixel) * degreesPerPixel;
+    FoV = 62.2; % Horizontal field of view in degrees
+    degreesPerPixel = FoV/totalNumberOfIImageColumns; % degrees/pixel
+    angleToRotateToCenterMidpointInCameraImage = (point(1) - totalNumberOfIImageColumns/2) * degreesPerPixel;
 
     radiansToCenterPointInCameraView = deg2rad(abs(angleToRotateToCenterMidpointInCameraImage));
     rotationSpeed = .1; % .1 radians/second
@@ -270,12 +269,12 @@ function [verticalLineFound, furthestPointOnLine] = findVerticalLine(cameraImage
 
     if angleToRotateToCenterMidpointInCameraImage > 0 % point is to the right of center
         % rotate camera right which is - (negative) angular velocity
-        velocity_msg.Angular.Z = -rotationSpeed; % .1 radians/second
+        rotationSpeed = -.1;  % .1 radians/second
     elseif angleToRotateToCenterMidpointInCameraImage < 0 % point is to the left of center
         %rotate camera left which is + (positive) angular velocity
-        velocity_msg.Angular.Z = rotationSpeed; % .1 radians/second
+        rotationSpeed = .1;  % .1 radians/second
     else
-        % don't rotate because the camera is centered on the midpoint
+        % don't rotate because the camera is centered on the point already
         timeInSecondsToRotate = 0;
     end
 
@@ -284,11 +283,10 @@ function [verticalLineFound, furthestPointOnLine] = findVerticalLine(cameraImage
     tic;
     while toc < timeInSecondsToRotate
         if messageSent == false
-             send(velocity_pub, velocity_msg);
-             messageSent = true;
-         end
+            moveTurtleBot(velocity_pub, rotationSpeed, 0)
+            messageSent = true;
+        end
     end
 
-    velocity_msg.Angular.Z = 0; % stop the robot angular rotation
-    send(velocity_pub,velocity_msg);
+    stopTurtleBot(velocity_pub);
 end

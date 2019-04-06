@@ -66,8 +66,7 @@ while 1
 end
 
 
-
-rosshutdown;
+deinitTurtleBot(velocity_pub);
 
 function stopTurtleBot(velocity_pub)
     velocity_msg = rosmessage(velocity_pub);
@@ -75,6 +74,11 @@ function stopTurtleBot(velocity_pub)
     velocity_msg.Linear.X = 0;
     velocity_msg.Angular.Z = 0;
     send(velocity_pub,velocity_msg);
+end
+
+function deinitTurtleBot(velocity_pub)
+    stopTurtleBot(velocity_pub);
+    rosshutdown;
 end
 
 function [image_sub, velocity_pub, laser_sub] = initTurtleBot()
